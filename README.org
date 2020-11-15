@@ -1,2 +1,23 @@
 * Description
-  A live code sharing application.
+  A peer-to-peer collaborative code editing application.
+
+  In order to facilitate collaborative editing, there are a few major competing factions: [[https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type][Conflict-free Replicated Data Types (CRDT)]] and [[https://en.wikipedia.org/wiki/Operational_transformation][Operation Transform (OT)]].
+  Both of these have the following properties:
+  - Convergence: All actors on different machine will eventually converge to the same state.
+  - Commutative: Order of operations doesn't matter. This is important due to network latency. If client A and client B make a change and send these changes over the network to client C, then we don't know in which order these will arrive at C.
+
+  Operation Transform algorithms usually require a centralized architecture, which makes them unsuitable for peer-to-peer applications. OT algorithms usually define
+  transformation functions such that for any pair of machines (a, b) that makes concurrent edits (e_a, e_b), then those edits will be transformed by some amount
+  according to their positions so that 
+  Due to their complexity, using an OT algorithm for peer-to-peer applications requires an obscene amount of edge cases to handle differing order of operations between clients.
+  They are also extremely hard to implement correctly due to the fact that any minor error will make an application unusable.
+
+  CRDTs are an eventually consistent series of data types that allow a couple desirable features:
+  - Uniqueness: position identifiers are unique, which makes concurrent operations commutative.
+  - Total Ordering: position identifiers can be compared (using >, <, and = operators), which is a total ordering. This means we can know whether an event on machine A happened before or after an event on machine B. This gives us the convergence property.
+  - Offline capabilities: due to the fact that each data type is replicated and position identifiers are unique, each local change can be buffered and sent in batches when the network is back up again.
+
+* References
+  The Logoot and Treedoc CRDT documentation was consulted for building this. Please see the below papers for references:
+  (Logoot) https://hal.inria.fr/inria-00336191v3/document
+  (Treedoc) https://hal.inria.fr/inria-00445975/document
