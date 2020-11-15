@@ -6,9 +6,7 @@
   - Convergence: All actors on different machine will eventually converge to the same state.
   - Commutative: Order of operations doesn't matter. This is important due to network latency. If client A and client B make a change and send these changes over the network to client C, then we don't know in which order these will arrive at C.
 
-  Operation Transform algorithms usually require a centralized architecture, which makes them unsuitable for peer-to-peer applications. OT algorithms usually define
-  transformation functions such that for any pair of machines (a, b) that makes concurrent edits (e_a, e_b), then those edits will be transformed by some amount
-  according to their positions so that 
+  Operation Transform algorithms usually require a centralized architecture, which makes them unsuitable for peer-to-peer applications.
   Due to their complexity, using an OT algorithm for peer-to-peer applications requires an obscene amount of edge cases to handle differing order of operations between clients.
   They are also extremely hard to implement correctly due to the fact that any minor error will make an application unusable.
 
