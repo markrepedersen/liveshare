@@ -1,37 +1,65 @@
 use {
-    rand::{thread_rng, Rng},
+    std::hash::Hash,
     std::net::{TcpListener, TcpStream},
 };
 
-pub type SiteId = u64;
-pub type Clock = u64;
-pub type PositionId = u64;
+// This type is reserved for the first and last atoms in a document.
+pub const NIL: char = '\0';
 
-#[derive(Debug, Clone)]
-pub struct Id(PositionId, SiteId);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Id {
+    digit: u64,
+    site_id: u64,
+}
 
-#[derive(Debug, Clone)]
-pub struct Position(Vec<Id>);
+impl Hash for Id {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.digit.hash(state);
+    }
+}
 
-#[derive(Debug, Clone)]
-pub struct AtomId(Position, Clock);
+/**
+An atom by itself is not unique. A sequence of atoms, however, ARE unique.
+Sequences of atoms in this implementation are formed by iterating over a path in a Trie.
+*/
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Atom {
+    id: Id,
+    clock: u64,
+    val: char,
+}
 
-#[derive(Debug, Clone)]
-pub struct DocumentAtom(AtomId, String);
+impl Hash for Atom {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Document {
-    site_id: u64,
-    sequence: Vec<DocumentAtom>,
+    sequence: Vec<Atom>,
 }
 
 impl<'a> Document {
     pub fn new() -> Self {
         Self {
-            site_id: 0,
             sequence: vec![
-                DocumentAtom(AtomId(Position(vec![Id(u64::MIN, 0)]), 0), String::from("")),
-                DocumentAtom(AtomId(Position(vec![Id(u64::MAX, 0)]), 0), String::from("")),
+                Atom {
+                    id: Id {
+                        digit: u64::MIN,
+                        site_id: 0,
+                    },
+                    clock: 0,
+                    val: NIL,
+                },
+                Atom {
+                    id: Id {
+                        digit: u64::MAX,
+                        site_id: 0,
+                    },
+                    clock: 0,
+                    val: NIL,
+                },
             ],
         }
     }
@@ -39,12 +67,10 @@ impl<'a> Document {
     /**
     Inserts an atom into the document.
 
-
     A client makes a local change at index i and the following steps are performed:
     1. Finds the i-th and (i+1)th position identifier.
     2. Inserts a new position identifier between them.
     3. Sends a remote INSERTION operation (with the newly generated position identfier) to all other clients.
-
 
     On receiving an INSERT operation with position identifier p, a client performs the following:
     1. Binary search to find the location to insert p.
@@ -55,23 +81,14 @@ impl<'a> Document {
     /**
     Deletes an atom from the document.
 
-
     A client deletes a character at index i and the following steps are performed:
     1. Find the i-th character in the document.
     2. Record its position identifer and then deletes it from the document.
     3. Sends a remote DELETE operation (with the newly generated position identfier) to all other clients.
-
 
     On receiving a DELETE operation with position identifier p, a client performs the following:
     1. Binary search to find the location of p.
     2. Deletes p from the document.
     */
     pub fn remove(&mut self, i: u64) {}
-
-    fn new_id(low: u64, high: u64) -> u64 {
-        let mut rand = thread_rng();
-        rand.gen_range(low, high)
-    }
-
-    fn binary_search(&self) {}
 }
