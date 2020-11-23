@@ -1,7 +1,7 @@
 use rand::thread_rng;
 use rand::Rng;
-use std::cmp::min;
 use std::cmp::Ordering;
+use std::cmp::{max, min};
 
 const NIL: char = '\0';
 const PAGE_MIN: u64 = 0;
@@ -9,7 +9,7 @@ const PAGE_MAX: u64 = u64::MAX;
 
 /// Converts a number to a vector of its digit parts.
 /// Since, for example, 201 == 2010 when comparing positions, trailing zeroes are removed.
-const fn number_to_vec(n: u64) -> Vec<u64> {
+fn number_to_vec(n: u64) -> Vec<u64> {
     let mut digits = Vec::new();
     let mut n = n;
 
@@ -34,12 +34,15 @@ const fn number_to_vec(n: u64) -> Vec<u64> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Id {
     digit: u64,
-    site_id: u64,
+    site: u64,
 }
 
 impl Id {
     pub fn new(digit: u64, site_id: u64) -> Self {
-        Id { digit, site_id }
+        Id {
+            digit,
+            site: site_id,
+        }
     }
 }
 
@@ -50,9 +53,9 @@ impl Ord for Id {
         } else if self.digit > other.digit {
             return Ordering::Greater;
         } else {
-            if self.site_id < other.site_id {
+            if self.site < other.site {
                 return Ordering::Less;
-            } else if self.site_id > other.site_id {
+            } else if self.site > other.site {
                 return Ordering::Greater;
             } else {
                 return Ordering::Equal;
@@ -82,40 +85,57 @@ where
 }
 
 impl Position {
-    /// When generating a new character between two others, we can do so
-    /// by mapping each character's position to a number N s.t. 0 > N > 1.
-    /// The delta of these two numbers plus the first number will be the new
-    /// position between them, since it is guaranteed that this number will be smaller than the second.
-    pub fn create(site: u64, before: &[Id], after: &[Id]) -> Position {
-        let n1 = if before.is_empty() {
-            PAGE_MIN
-        } else {
-            before.iter().fold(0, |acc, v| acc + v.digit)
-        };
-        let n2 = if after.is_empty() {
-            PAGE_MAX
-        } else {
-            after.iter().fold(0, |acc, v| acc + v.digit)
-        };
-        let mid = number_to_vec(n1 + Position::generate_random_id(n2 - n1));
+    /// Creates a new position identifier based on the following cases.
+    /// # Case 1: Digits differ by exactly 1
+    /// In this case, we can't find an integer that lies between the two digits.
+    /// Therefore, we must continue onto the next `Id`.
+    /// ```
+    ///   prev  (0.1311) : [1,1] -> *[3,1]* -> [1,1] -> [1,1] -> ..
+    ///   next  (0.1411) : [1,1] -> *[4,1]* -> [1,1] -> [1,1] -> ..
+    /// ```
+    /// # Case 2: Digits differ by more than 1
+    /// We can create a new identifier between the two digits
+    /// Note that the length of `between` will not be larger than `prev` or `next` in this case
+    /// ```
+    ///   prev  (0.1359) : [1,1] -> *[3,1]* -> [5,3] -> [9,2]
+    ///   next  (0.1610) : [1,1] -> *[6,1]* -> [10,1]
+    /// between (0.1500) : [1,1] ->  [5,1]
+    /// ```
+    /// # Case 3: Same digits, different site
+    /// ```
+    ///   prev  (0.13590) : [1,1] -> *[3,1]* -> [5,3] -> [9,2]
+    ///   next  (0.13800) : [1,1] -> *[3,3]* -> [8,1]
+    /// between (0.13591) : [1,1] ->  [3,1]  -> [5,3] -> [9,2] -> [1,1]
+    pub fn create(site: u64, before: &[Id], after: &[Id]) -> Self {
+        let (virtual_min, virtual_max) = (Id::new(PAGE_MIN, site), Id::new(PAGE_MAX, site));
+        let len = max(before.len(), after.len());
+        let mut new_pos = Vec::new();
+        let mut is_same_site = true;
 
-        Position(
-            mid.iter()
-                .enumerate()
-                .map(|(i, digit)| match *digit {
-                    d if i == mid.len() - 1 => Id::new(d, site),
-                    d if i < before.len() && d == before[i].digit => Id::new(d, before[i].site_id),
-                    d if i < after.len() && d == after[i].digit => Id::new(d, after[i].site_id),
-                    d if i < before.len() && d == before[i].digit => Id::new(d, site),
-                    d => Id::new(d, site),
-                })
-                .collect(),
-        )
+        for i in 0..len {
+            let id1 = before.get(i).unwrap_or(&virtual_min);
+            let id2 = after
+                .get(i)
+                .filter(|_| is_same_site)
+                .unwrap_or(&virtual_max);
+            let diff = id2.digit - id1.digit;
+
+            if diff > 1 {
+                let new_digit = Self::generate_random_digit(id1.digit, id2.digit);
+                new_pos.push(Id::new(new_digit, site));
+                break;
+            } else {
+                new_pos.push(id1.to_owned());
+                is_same_site = id1.cmp(id2) == Ordering::Equal;
+            }
+        }
+
+        Position(new_pos)
     }
 
-    fn generate_random_id(upper_bound: u64) -> u64 {
+    fn generate_random_digit(lower_bound: u64, upper_bound: u64) -> u64 {
         let mut rand = thread_rng();
-        rand.gen_range(1, upper_bound)
+        rand.gen_range(lower_bound, upper_bound)
     }
 }
 
@@ -164,30 +184,12 @@ impl Char {
         }
     }
 
-    /// Creates a new position identifier based on the following rules:
     pub fn create(c: char, site: u64, c1: &Char, c2: &Char) -> Self {
-        let (pos1, pos2) = (&c1.position.0, &c2.position.0);
-        let res;
-
-        for i in 0..min(pos1.len(), pos2.len()) {
-            let (root1, root2) = (pos1[i], pos2[i]);
-
-            if root1.digit != root2.digit {
-                res = Char::new(Position::create(site, pos1, pos2), 0, c);
-                break;
-            } else if root1.site_id < root2.site_id {
-                res = Char::new(Position::create(site, &pos1[..i], &[]), 0, c);
-                break;
-            } else if root1.site_id == root2.site_id {
-                continue;
-            } else {
-                dbg!(c1);
-                dbg!(c2);
-                panic!("Invalid position ordering.")
-            }
+        Self {
+            position: Position::create(site, &c1.position.0, &c2.position.0),
+            clock: 0,
+            val: c,
         }
-
-        res
     }
 }
 
@@ -198,6 +200,16 @@ pub struct Document {
 }
 
 impl Document {
+    pub fn new() -> Self {
+        Self {
+            nodes: vec![
+                Char::new(Position(vec![Id::new(PAGE_MIN, 0)]), 0, NIL),
+                Char::new(Position(vec![Id::new(PAGE_MAX, 0)]), 0, NIL),
+            ],
+            site: 0,
+        }
+    }
+
     /// Inserts an character into the document.
     /// # Local Change
     /// A client makes a local change at index i and the following steps are performed:
@@ -211,9 +223,19 @@ impl Document {
     pub fn insert(&mut self, c: char, n: usize) {
         let prev = self.nodes.get(n).expect("Invalid index.");
         let next = self.nodes.get(n + 1).expect("Invalid index.");
-        let between = Char::create(c, self.site, prev, next);
+        let node = Char::create(c, self.site, prev, next);
 
-        self.nodes.insert(n, between);
+        self.nodes.insert(n + 1, node);
+    }
+
+    /// Gets the content of the document by aggregating all of the nodes together into a single string.
+    pub fn get_content(&self) -> Option<String> {
+        Some(self.nodes.iter().fold(String::new(), |mut acc, c| {
+            if c.val != NIL {
+                acc.push(c.val);
+            }
+            acc
+        }))
     }
 
     /// Deletes an atom from the document.
@@ -227,4 +249,59 @@ impl Document {
     /// - Binary search to find the location of p.
     /// - Deletes p from the document.
     pub fn remove(&mut self, i: u64) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Document;
+    use super::PAGE_MAX;
+    use super::PAGE_MIN;
+
+    #[test]
+    fn test_initial_insert() {
+        let mut doc = Document::new();
+        doc.insert('a', 0);
+        assert_eq!(doc.nodes.len(), 3);
+
+        let digit = doc.nodes[1].position.0[0].digit;
+
+        assert!(PAGE_MIN < digit && digit < PAGE_MAX);
+    }
+
+    #[test]
+    fn test_consecutive_inserts() {
+        let mut doc = Document::new();
+        doc.insert('h', 0);
+        doc.insert('e', 1);
+        doc.insert('l', 2);
+        doc.insert('l', 3);
+        doc.insert('o', 4);
+        doc.insert(' ', 5);
+        doc.insert('w', 6);
+        doc.insert('o', 7);
+        doc.insert('r', 8);
+        doc.insert('l', 9);
+        doc.insert('d', 10);
+
+        assert_eq!(doc.get_content().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_interleaved_inserts() {
+        let mut doc = Document::new();
+        doc.insert('h', 0);
+        doc.insert('e', 0);
+        doc.insert('l', 0);
+        doc.insert('l', 0);
+        doc.insert('o', 0);
+        doc.insert(' ', 0);
+        doc.insert('w', 0);
+        doc.insert('o', 0);
+        doc.insert('r', 0);
+        doc.insert('l', 0);
+        doc.insert('d', 0);
+
+        assert_eq!(doc.get_content().unwrap(), "dlrow olleh");
+	dbg!(doc);
+    }
 }
