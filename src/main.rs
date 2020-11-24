@@ -3,16 +3,18 @@
 */
 mod config;
 mod document;
+mod node;
 
-use config::Config;
-use document::Char;
-use document::Document;
-use document::Id;
-use std::collections::BTreeMap;
+use {
+    node::Node, config::Config, document::Char, document::Document, document::Id, std::collections::BTreeMap,
+};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // let config = Config::parse()?;
-    // let listener = TcpListener::bind((config.addr.host, config.addr.port))?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::parse()?;
+    let mut node = Node::new(&config.addr.host, config.addr.port, config.clients)?;
+
+    node.process_events().await?;
 
     Ok(())
 }

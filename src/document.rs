@@ -1,37 +1,18 @@
+use bincode::serialize;
 use rand::thread_rng;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::cmp::{max, min};
+use std::net::TcpStream;
+
+use crate::config::Client;
 
 const NIL: char = '\0';
 const PAGE_MIN: u64 = 0;
 const PAGE_MAX: u64 = u64::MAX;
 
-/// Converts a number to a vector of its digit parts.
-/// Since, for example, 201 == 2010 when comparing positions, trailing zeroes are removed.
-fn number_to_vec(n: u64) -> Vec<u64> {
-    let mut digits = Vec::new();
-    let mut n = n;
-
-    while n > 9 {
-        digits.push(n % 10);
-        n = n / 10;
-    }
-
-    digits.push(n);
-    digits.reverse();
-
-    let mut n = digits.len() - 1;
-
-    while digits[n] == 0 {
-        digits.remove(n);
-        n -= 1;
-    }
-
-    digits
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Id {
     digit: u64,
     site: u64,
@@ -70,8 +51,35 @@ impl PartialOrd for Id {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Position(Vec<Id>);
+
+impl Ord for Position {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let (len1, len2) = (self.0.len(), other.0.len());
+
+        for i in 0..min(len1, len2) {
+            let ord = self.0[i].cmp(&other.0[i]);
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+
+        if len1 < len2 {
+            return Ordering::Less;
+        } else if len1 > len2 {
+            return Ordering::Greater;
+        } else {
+            return Ordering::Equal;
+        }
+    }
+}
+
+impl PartialOrd for Position {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 impl<Idx> std::ops::Index<Idx> for Position
 where
@@ -141,31 +149,16 @@ impl Position {
 
 /// This is the smallest unit of change in a document.
 /// When users change an individual character in a document, this struct will be used to denote it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Char {
-    position: Position,
     clock: u64,
     val: char,
+    position: Position,
 }
 
 impl Ord for Char {
     fn cmp(&self, other: &Self) -> Ordering {
-        let (len1, len2) = (self.position.0.len(), other.position.0.len());
-
-        for i in 0..min(len1, len2) {
-            let ord = self.position.0[i].cmp(&other.position.0[i]);
-            if ord != Ordering::Equal {
-                return ord;
-            }
-        }
-
-        if len1 < len2 {
-            return Ordering::Less;
-        } else if len1 > len2 {
-            return Ordering::Greater;
-        } else {
-            return Ordering::Equal;
-        }
+        self.position.cmp(&other.position)
     }
 }
 
@@ -196,6 +189,7 @@ impl Char {
 #[derive(Debug)]
 pub struct Document {
     nodes: Vec<Char>,
+    clients: Vec<Client>,
     site: u64,
 }
 
@@ -206,21 +200,36 @@ impl Document {
                 Char::new(Position(vec![Id::new(PAGE_MIN, 0)]), 0, NIL),
                 Char::new(Position(vec![Id::new(PAGE_MAX, 0)]), 0, NIL),
             ],
+            clients: Vec::new(),
             site: 0,
         }
     }
 
-    /// Inserts an character into the document.
-    /// # Local Change
+    /// Add a single client to the set of clients that changes will be propagated to.
+    pub fn client(&mut self, client: Client) {
+        self.clients.push(client);
+    }
+
+    /// Sets the list of clients that changes will be propagated to.
+    pub fn clients(&mut self, clients: Vec<Client>) {
+        self.clients = clients;
+    }
+
+    /// On receiving an local INSERT operation with position identifier p, a client performs the following:
+    /// - Binary search to find the location to insert p.
+    /// - Insert p into document.
+    pub fn remote_insert(&mut self, c: Char) {
+	for node in &self.clients {
+	    
+	}
+    }
+
+    /// On receiving an remote INSERT operation with position identifier p, a client performs the following:
     /// A client makes a local change at index i and the following steps are performed:
     /// - Finds the i-th and (i+1)th position identifier.
     /// - Inserts a new position identifier between them.
     /// - Sends a remote INSERTION operation (with the newly generated position identifier) to all other clients.
-    /// # Remote Change
-    /// On receiving an INSERT operation with position identifier p, a client performs the following:
-    /// - Binary search to find the location to insert p.
-    /// - Insert p into document.
-    pub fn insert(&mut self, c: char, n: usize) {
+    pub fn local_insert(&mut self, c: char, n: usize) {
         let prev = self.nodes.get(n).expect("Invalid index.");
         let next = self.nodes.get(n + 1).expect("Invalid index.");
         let node = Char::create(c, self.site, prev, next);
@@ -238,17 +247,20 @@ impl Document {
         }))
     }
 
-    /// Deletes an atom from the document.
-    /// # Local Change
+    /// Receives a local request to delete an atom from the document.
     /// A client deletes a character at index i and the following steps are performed:
-    /// - Find the i-th character in the document.
+    /// - Find the (i+1)-th character in the document (i + 1 since we don't count the virtual nodes).
     /// - Record its position identifer and then deletes it from the document.
     /// - Sends a remote DELETE operation (with the newly generated position identfier) to all other clients.
-    /// # Remote Change
+    pub fn local_delete(&mut self, n: usize) {
+        let removed = self.nodes.remove(n + 1);
+    }
+
+    /// Receives a remote request to delete an atom from the document.
     /// - On receiving a DELETE operation with position identifier p, a client performs the following:
     /// - Binary search to find the location of p.
     /// - Deletes p from the document.
-    pub fn remove(&mut self, i: u64) {}
+    pub fn remote_delete(&mut self, c: Char) {}
 }
 
 #[cfg(test)]
@@ -260,7 +272,7 @@ mod tests {
     #[test]
     fn test_initial_insert() {
         let mut doc = Document::new();
-        doc.insert('a', 0);
+        doc.local_insert('a', 0);
         assert_eq!(doc.nodes.len(), 3);
 
         let digit = doc.nodes[1].position.0[0].digit;
@@ -271,37 +283,67 @@ mod tests {
     #[test]
     fn test_consecutive_inserts() {
         let mut doc = Document::new();
-        doc.insert('h', 0);
-        doc.insert('e', 1);
-        doc.insert('l', 2);
-        doc.insert('l', 3);
-        doc.insert('o', 4);
-        doc.insert(' ', 5);
-        doc.insert('w', 6);
-        doc.insert('o', 7);
-        doc.insert('r', 8);
-        doc.insert('l', 9);
-        doc.insert('d', 10);
+        doc.local_insert('h', 0);
+        doc.local_insert('e', 1);
+        doc.local_insert('l', 2);
+        doc.local_insert('l', 3);
+        doc.local_insert('o', 4);
+        doc.local_insert(' ', 5);
+        doc.local_insert('w', 6);
+        doc.local_insert('o', 7);
+        doc.local_insert('r', 8);
+        doc.local_insert('l', 9);
+        doc.local_insert('d', 10);
 
         assert_eq!(doc.get_content().unwrap(), "hello world");
+        assert_eq!(
+            doc.nodes.windows(2).all(|window| window[0] < window[1]),
+            true
+        );
     }
 
     #[test]
     fn test_interleaved_inserts() {
         let mut doc = Document::new();
-        doc.insert('h', 0);
-        doc.insert('e', 0);
-        doc.insert('l', 0);
-        doc.insert('l', 0);
-        doc.insert('o', 0);
-        doc.insert(' ', 0);
-        doc.insert('w', 0);
-        doc.insert('o', 0);
-        doc.insert('r', 0);
-        doc.insert('l', 0);
-        doc.insert('d', 0);
+        doc.local_insert('h', 0);
+        doc.local_insert('e', 0);
+        doc.local_insert('l', 0);
+        doc.local_insert('l', 0);
+        doc.local_insert('o', 0);
+        doc.local_insert(' ', 0);
+        doc.local_insert('w', 0);
+        doc.local_insert('o', 0);
+        doc.local_insert('r', 0);
+        doc.local_insert('l', 0);
+        doc.local_insert('d', 0);
 
         assert_eq!(doc.get_content().unwrap(), "dlrow olleh");
-	dbg!(doc);
+        assert_eq!(
+            doc.nodes.windows(2).all(|window| window[0] < window[1]),
+            true
+        );
+    }
+
+    #[test]
+    fn test_delete() {
+        let mut doc = Document::new();
+        doc.local_insert('h', 0);
+        doc.local_insert('e', 0);
+        doc.local_insert('l', 0);
+        doc.local_insert('l', 0);
+        doc.local_insert('o', 0);
+        doc.local_insert(' ', 0);
+        doc.local_insert('w', 0);
+        doc.local_insert('o', 0);
+        doc.local_insert('r', 0);
+        doc.local_insert('l', 0);
+        doc.local_insert('d', 0);
+        doc.local_delete(5);
+
+        assert_eq!(doc.get_content().unwrap(), "dlrowolleh");
+        assert_eq!(
+            doc.nodes.windows(2).all(|window| window[0] < window[1]),
+            true
+        );
     }
 }
