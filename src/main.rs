@@ -6,7 +6,8 @@ mod document;
 mod node;
 
 use {
-    node::Node, config::Config, document::Char, document::Document, document::Id, std::collections::BTreeMap,
+    config::Config, document::Char, document::Document, document::Id, node::Node,
+    std::collections::BTreeMap,
 };
 
 #[tokio::main]

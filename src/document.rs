@@ -1,12 +1,14 @@
-use bincode::serialize;
+use crate::config::Client;
+use crate::node::Operation;
+use bincode::serialize_into;
+use futures::future::join_all;
 use rand::thread_rng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::cmp::{max, min};
 use std::net::TcpStream;
-
-use crate::config::Client;
+use tokio::task::{spawn, JoinHandle};
 
 const NIL: char = '\0';
 const PAGE_MIN: u64 = 0;
@@ -194,34 +196,37 @@ pub struct Document {
 }
 
 impl Document {
-    pub fn new() -> Self {
+    pub fn new(nodes: Vec<Client>) -> Self {
         Self {
             nodes: vec![
                 Char::new(Position(vec![Id::new(PAGE_MIN, 0)]), 0, NIL),
                 Char::new(Position(vec![Id::new(PAGE_MAX, 0)]), 0, NIL),
             ],
-            clients: Vec::new(),
+            clients: nodes,
             site: 0,
         }
-    }
-
-    /// Add a single client to the set of clients that changes will be propagated to.
-    pub fn client(&mut self, client: Client) {
-        self.clients.push(client);
-    }
-
-    /// Sets the list of clients that changes will be propagated to.
-    pub fn clients(&mut self, clients: Vec<Client>) {
-        self.clients = clients;
     }
 
     /// On receiving an local INSERT operation with position identifier p, a client performs the following:
     /// - Binary search to find the location to insert p.
     /// - Insert p into document.
-    pub fn remote_insert(&mut self, c: Char) {
-	for node in &self.clients {
-	    
-	}
+    /// TODO: Add a controller thread for each connection so that connections don't have to be restarted each time an operation is performed.
+    pub async fn remote_insert(&self, c: Char) {
+        let mut tasks = Vec::new();
+        for client in &self.clients {
+            let host = client.host.clone();
+            let port = client.port;
+            let val = c.clone();
+
+            tasks.push(spawn(async move {
+                let stream = TcpStream::connect((host, port)).unwrap();
+                let operation = Operation::RemoteInsert { val };
+                serialize_into(stream, &operation)
+                    .expect("Error serializing remote insert operation");
+            }))
+        }
+
+        join_all(tasks).await;
     }
 
     /// On receiving an remote INSERT operation with position identifier p, a client performs the following:
@@ -260,7 +265,24 @@ impl Document {
     /// - On receiving a DELETE operation with position identifier p, a client performs the following:
     /// - Binary search to find the location of p.
     /// - Deletes p from the document.
-    pub fn remote_delete(&mut self, c: Char) {}
+    /// TODO: Add a controller thread for each connection so that connections don't have to be restarted each time an operation is performed.
+    pub async fn remote_delete(&mut self, c: Char) {
+        let mut tasks = Vec::new();
+        for client in &self.clients {
+            let host = client.host.clone();
+            let port = client.port;
+            let val = c.clone();
+
+            tasks.push(spawn(async move {
+                let stream = TcpStream::connect((host, port)).unwrap();
+                let operation = Operation::RemoteDelete { val };
+                serialize_into(stream, &operation)
+                    .expect("Error serializing remote delete operation");
+            }))
+        }
+
+        join_all(tasks).await;
+    }
 }
 
 #[cfg(test)]
@@ -271,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_initial_insert() {
-        let mut doc = Document::new();
+        let mut doc = Document::new(vec![]);
         doc.local_insert('a', 0);
         assert_eq!(doc.nodes.len(), 3);
 
@@ -282,7 +304,8 @@ mod tests {
 
     #[test]
     fn test_consecutive_inserts() {
-        let mut doc = Document::new();
+        let mut doc = Document::new(vec![]);
+
         doc.local_insert('h', 0);
         doc.local_insert('e', 1);
         doc.local_insert('l', 2);
@@ -304,7 +327,8 @@ mod tests {
 
     #[test]
     fn test_interleaved_inserts() {
-        let mut doc = Document::new();
+        let mut doc = Document::new(vec![]);
+
         doc.local_insert('h', 0);
         doc.local_insert('e', 0);
         doc.local_insert('l', 0);
@@ -326,7 +350,8 @@ mod tests {
 
     #[test]
     fn test_delete() {
-        let mut doc = Document::new();
+        let mut doc = Document::new(vec![]);
+
         doc.local_insert('h', 0);
         doc.local_insert('e', 0);
         doc.local_insert('l', 0);

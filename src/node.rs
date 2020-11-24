@@ -1,5 +1,4 @@
 use {
-    tokio::{task::{spawn, JoinHandle}},
     crate::{
         config::Client,
         document::{Char, Document},
@@ -10,6 +9,7 @@ use {
         net::TcpListener,
         sync::mpsc::{channel, Receiver, Sender},
     },
+    tokio::task::{spawn, JoinHandle},
 };
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -38,9 +38,8 @@ impl Node {
     /// `nodes`: the set of nodes that changes will be progagated to
     pub fn new(host: &str, port: u16, nodes: Vec<Client>) -> Result<Self, io::Error> {
         let (sender, receiver) = channel::<Operation>();
-        let mut document = Document::new();
+        let mut document = Document::new(nodes);
 
-        document.clients(nodes);
         Ok(Self {
             host: String::from(host),
             port,
@@ -62,13 +61,13 @@ impl Node {
     /// Remote inserts and deletions will be handled transparently as if they were local changes.
     pub async fn process_events(&mut self) -> Result<(), io::Error> {
         let thread_sender = self.sender.clone();
-	let host = self.host.clone();
-	let port = self.port;
-	
-	self.handle = Some(spawn(async move {
-	    let socket = TcpListener::bind((host, port)).unwrap();
+        let host = self.host.clone();
+        let port = self.port;
 
-	    for stream in socket.incoming() {
+        self.handle = Some(spawn(async move {
+            let socket = TcpListener::bind((host, port)).unwrap();
+
+            for stream in socket.incoming() {
                 match stream {
                     Ok(ref stream) => {
                         let operation: Operation = bincode::deserialize_from(stream).unwrap();
@@ -79,14 +78,14 @@ impl Node {
                     Err(e) => println!("Error while receiving from client: {:#?}", e),
                 }
             }
-	}));
+        }));
 
         loop {
             match self.receiver.recv() {
                 Ok(Operation::LocalInsert { val, pos }) => self.document.local_insert(val, pos),
-                Ok(Operation::RemoteInsert { val }) => self.document.remote_insert(val),
+                Ok(Operation::RemoteInsert { val }) => self.document.remote_insert(val).await,
                 Ok(Operation::LocalDelete { pos }) => self.document.local_delete(pos),
-                Ok(Operation::RemoteDelete { val }) => self.document.remote_delete(val),
+                Ok(Operation::RemoteDelete { val }) => self.document.remote_delete(val).await,
                 Ok(Operation::Invalid) => println!("Received invalid operation."),
                 Err(e) => println!("Received error: {:#?}", e),
             }
