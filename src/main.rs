@@ -5,17 +5,50 @@ mod config;
 mod document;
 mod node;
 
-use {
-    config::Config, document::Char, document::Document, document::Id, node::Node,
-    std::collections::BTreeMap,
-};
+use std::io::{stdin, stdout, Write};
+use termion::event::Key;
+use termion::input::TermRead;
+use termion::raw::IntoRawMode;
+use {config::Config, node::Node};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::parse()?;
-    let mut node = Node::new(&config.addr.host, config.addr.port, config.clients)?;
+    // let config = Config::parse()?;
+    // // Trick to tell the compiler that it will live for entirety of program's life.
+    // let node: &'static mut Node = Box::leak(Box::new(Node::new(
+    //     config.addr.host,
+    //     config.addr.port,
+    //     config.clients,
+    // )?));
 
-    node.process_events().await?;
+    // node.run().await?;
+
+    // TODO: make frontend separate from Node backend. This is better, since frontends can then be interchangeable.
+
+    let stdin = stdin();
+    let mut stdout = stdout().into_raw_mode().unwrap();
+    write!(stdout, r#"{}{}ctrl + q to exit, ctrl + h to print "Hello world!", alt + t to print "termion is cool""#, termion::cursor::Goto(1, 1), termion::clear::All)
+            .unwrap();
+    stdout.flush().unwrap();
+
+    for key in stdin.keys() {
+        write!(
+            stdout,
+            "{}{}",
+            termion::cursor::Goto(1, 1),
+            termion::clear::All
+        )
+        .expect("Clearing screen failed.");
+
+        match key.unwrap() {
+            Key::Ctrl('h') => println!("Hello world!"),
+            Key::Ctrl('q') => break,
+            Key::Alt('t') => println!("termion is cool"),
+            _ => (),
+        }
+
+        stdout.flush().unwrap();
+    }
 
     Ok(())
 }

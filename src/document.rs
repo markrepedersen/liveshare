@@ -1,14 +1,8 @@
-use crate::config::Client;
-use crate::node::Operation;
-use bincode::serialize_into;
-use futures::future::join_all;
 use rand::thread_rng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::cmp::{max, min};
-use std::net::TcpStream;
-use tokio::task::{spawn, JoinHandle};
 
 const NIL: char = '\0';
 const PAGE_MIN: u64 = 0;
@@ -190,43 +184,19 @@ impl Char {
 
 #[derive(Debug)]
 pub struct Document {
-    nodes: Vec<Char>,
-    clients: Vec<Client>,
-    site: u64,
+    pub nodes: Vec<Char>,
+    pub site: u64,
 }
 
 impl Document {
-    pub fn new(nodes: Vec<Client>) -> Self {
+    pub fn new() -> Self {
         Self {
             nodes: vec![
                 Char::new(Position(vec![Id::new(PAGE_MIN, 0)]), 0, NIL),
                 Char::new(Position(vec![Id::new(PAGE_MAX, 0)]), 0, NIL),
             ],
-            clients: nodes,
             site: 0,
         }
-    }
-
-    /// On receiving an local INSERT operation with position identifier p, a client performs the following:
-    /// - Binary search to find the location to insert p.
-    /// - Insert p into document.
-    /// TODO: Add a controller thread for each connection so that connections don't have to be restarted each time an operation is performed.
-    pub async fn remote_insert(&self, c: Char) {
-        let mut tasks = Vec::new();
-        for client in &self.clients {
-            let host = client.host.clone();
-            let port = client.port;
-            let val = c.clone();
-
-            tasks.push(spawn(async move {
-                let stream = TcpStream::connect((host, port)).unwrap();
-                let operation = Operation::RemoteInsert { val };
-                serialize_into(stream, &operation)
-                    .expect("Error serializing remote insert operation");
-            }))
-        }
-
-        join_all(tasks).await;
     }
 
     /// On receiving an remote INSERT operation with position identifier p, a client performs the following:
@@ -234,22 +204,13 @@ impl Document {
     /// - Finds the i-th and (i+1)th position identifier.
     /// - Inserts a new position identifier between them.
     /// - Sends a remote INSERTION operation (with the newly generated position identifier) to all other clients.
-    pub fn local_insert(&mut self, c: char, n: usize) {
-        let prev = self.nodes.get(n).expect("Invalid index.");
-        let next = self.nodes.get(n + 1).expect("Invalid index.");
+    pub fn insert_by_index(&mut self, c: char, n: usize) -> Option<&Char> {
+        let prev = self.nodes.get(n)?;
+        let next = self.nodes.get(n + 1)?;
         let node = Char::create(c, self.site, prev, next);
 
         self.nodes.insert(n + 1, node);
-    }
-
-    /// Gets the content of the document by aggregating all of the nodes together into a single string.
-    pub fn get_content(&self) -> Option<String> {
-        Some(self.nodes.iter().fold(String::new(), |mut acc, c| {
-            if c.val != NIL {
-                acc.push(c.val);
-            }
-            acc
-        }))
+        self.nodes.get(n + 1)
     }
 
     /// Receives a local request to delete an atom from the document.
@@ -257,31 +218,19 @@ impl Document {
     /// - Find the (i+1)-th character in the document (i + 1 since we don't count the virtual nodes).
     /// - Record its position identifer and then deletes it from the document.
     /// - Sends a remote DELETE operation (with the newly generated position identfier) to all other clients.
-    pub fn local_delete(&mut self, n: usize) {
-        let removed = self.nodes.remove(n + 1);
+    pub fn delete_by_index(&mut self, n: usize) -> Option<Char> {
+        let node = self.nodes.remove(n + 1);
+        Some(node)
     }
 
-    /// Receives a remote request to delete an atom from the document.
-    /// - On receiving a DELETE operation with position identifier p, a client performs the following:
-    /// - Binary search to find the location of p.
-    /// - Deletes p from the document.
-    /// TODO: Add a controller thread for each connection so that connections don't have to be restarted each time an operation is performed.
-    pub async fn remote_delete(&mut self, c: Char) {
-        let mut tasks = Vec::new();
-        for client in &self.clients {
-            let host = client.host.clone();
-            let port = client.port;
-            let val = c.clone();
-
-            tasks.push(spawn(async move {
-                let stream = TcpStream::connect((host, port)).unwrap();
-                let operation = Operation::RemoteDelete { val };
-                serialize_into(stream, &operation)
-                    .expect("Error serializing remote delete operation");
-            }))
-        }
-
-        join_all(tasks).await;
+    /// Gets the content of the document by aggregating all of the nodes together into a single string.
+    pub fn content(&self) -> Option<String> {
+        Some(self.nodes.iter().fold(String::new(), |mut acc, c| {
+            if c.val != NIL {
+                acc.push(c.val);
+            }
+            acc
+        }))
     }
 }
 
@@ -291,10 +240,14 @@ mod tests {
     use super::PAGE_MAX;
     use super::PAGE_MIN;
 
+    fn is_sorted(doc: &Document) -> bool {
+        doc.nodes.windows(2).all(|window| window[0] < window[1])
+    }
+
     #[test]
     fn test_initial_insert() {
-        let mut doc = Document::new(vec![]);
-        doc.local_insert('a', 0);
+        let mut doc = Document::new();
+        doc.insert_by_index('a', 0);
         assert_eq!(doc.nodes.len(), 3);
 
         let digit = doc.nodes[1].position.0[0].digit;
@@ -304,21 +257,21 @@ mod tests {
 
     #[test]
     fn test_consecutive_inserts() {
-        let mut doc = Document::new(vec![]);
+        let mut doc = Document::new();
 
-        doc.local_insert('h', 0);
-        doc.local_insert('e', 1);
-        doc.local_insert('l', 2);
-        doc.local_insert('l', 3);
-        doc.local_insert('o', 4);
-        doc.local_insert(' ', 5);
-        doc.local_insert('w', 6);
-        doc.local_insert('o', 7);
-        doc.local_insert('r', 8);
-        doc.local_insert('l', 9);
-        doc.local_insert('d', 10);
+        doc.insert_by_index('h', 0);
+        doc.insert_by_index('e', 1);
+        doc.insert_by_index('l', 2);
+        doc.insert_by_index('l', 3);
+        doc.insert_by_index('o', 4);
+        doc.insert_by_index(' ', 5);
+        doc.insert_by_index('w', 6);
+        doc.insert_by_index('o', 7);
+        doc.insert_by_index('r', 8);
+        doc.insert_by_index('l', 9);
+        doc.insert_by_index('d', 10);
 
-        assert_eq!(doc.get_content().unwrap(), "hello world");
+        assert_eq!(doc.content().unwrap(), "hello world");
         assert_eq!(
             doc.nodes.windows(2).all(|window| window[0] < window[1]),
             true
@@ -327,48 +280,42 @@ mod tests {
 
     #[test]
     fn test_interleaved_inserts() {
-        let mut doc = Document::new(vec![]);
+        let mut doc = Document::new();
 
-        doc.local_insert('h', 0);
-        doc.local_insert('e', 0);
-        doc.local_insert('l', 0);
-        doc.local_insert('l', 0);
-        doc.local_insert('o', 0);
-        doc.local_insert(' ', 0);
-        doc.local_insert('w', 0);
-        doc.local_insert('o', 0);
-        doc.local_insert('r', 0);
-        doc.local_insert('l', 0);
-        doc.local_insert('d', 0);
+        doc.insert_by_index('h', 0);
+        doc.insert_by_index('e', 0);
+        doc.insert_by_index('l', 0);
+        doc.insert_by_index('l', 0);
+        doc.insert_by_index('o', 0);
+        doc.insert_by_index(' ', 0);
+        doc.insert_by_index('w', 0);
+        doc.insert_by_index('o', 0);
+        doc.insert_by_index('r', 0);
+        doc.insert_by_index('l', 0);
+        doc.insert_by_index('d', 0);
 
-        assert_eq!(doc.get_content().unwrap(), "dlrow olleh");
-        assert_eq!(
-            doc.nodes.windows(2).all(|window| window[0] < window[1]),
-            true
-        );
+        assert_eq!(doc.content().unwrap(), "dlrow olleh");
+        assert_eq!(is_sorted(&doc), true);
     }
 
     #[test]
     fn test_delete() {
-        let mut doc = Document::new(vec![]);
+        let mut doc = Document::new();
 
-        doc.local_insert('h', 0);
-        doc.local_insert('e', 0);
-        doc.local_insert('l', 0);
-        doc.local_insert('l', 0);
-        doc.local_insert('o', 0);
-        doc.local_insert(' ', 0);
-        doc.local_insert('w', 0);
-        doc.local_insert('o', 0);
-        doc.local_insert('r', 0);
-        doc.local_insert('l', 0);
-        doc.local_insert('d', 0);
-        doc.local_delete(5);
+        doc.insert_by_index('h', 0);
+        doc.insert_by_index('e', 0);
+        doc.insert_by_index('l', 0);
+        doc.insert_by_index('l', 0);
+        doc.insert_by_index('o', 0);
+        doc.insert_by_index(' ', 0);
+        doc.insert_by_index('w', 0);
+        doc.insert_by_index('o', 0);
+        doc.insert_by_index('r', 0);
+        doc.insert_by_index('l', 0);
+        doc.insert_by_index('d', 0);
+        doc.delete_by_index(5);
 
-        assert_eq!(doc.get_content().unwrap(), "dlrowolleh");
-        assert_eq!(
-            doc.nodes.windows(2).all(|window| window[0] < window[1]),
-            true
-        );
+        assert_eq!(doc.content().unwrap(), "dlrowolleh");
+        assert_eq!(is_sorted(&doc), true);
     }
 }
