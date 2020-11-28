@@ -257,13 +257,14 @@ impl Document {
     }
 
     /// Gets the content of the document by aggregating all of the nodes together into a single string.
-    pub fn content(&self) -> Option<String> {
-        Some(self.nodes.iter().fold(String::new(), |mut acc, c| {
+    /// An empty document will produce an empty string.
+    pub fn content(&self) -> String {
+        self.nodes.iter().fold(String::new(), |mut acc, c| {
             if c.val != NIL {
                 acc.push(c.val);
             }
             acc
-        }))
+        })
     }
 }
 
@@ -307,7 +308,7 @@ mod tests {
         doc.insert_by_index('l', 9);
         doc.insert_by_index('d', 10);
 
-        assert_eq!(doc.content().unwrap(), "hello world");
+        assert_eq!(doc.content(), "hello world");
         assert_eq!(
             doc.nodes.windows(2).all(|window| window[0] < window[1]),
             true
@@ -334,7 +335,7 @@ mod tests {
 
         doc.insert_by_val(&space);
 
-        assert_eq!(doc.content().unwrap(), "hello world");
+        assert_eq!(doc.content(), "hello world");
     }
 
     #[test]
@@ -373,6 +374,38 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_by_value_complex() {
+        let mut doc = Document::new(0);
+        let deleted_node = Char::new(
+            Position(vec![Id::new(1, 0), Id::new(6, 0), Id::new(3, 1)]),
+            0,
+            'h',
+        );
+
+        doc.nodes
+            .insert(1, Char::new(Position(vec![Id::new(1, 0)]), 0, 'h'));
+        doc.nodes.insert(
+            2,
+            Char::new(Position(vec![Id::new(1, 0), Id::new(4, 0)]), 0, 'h'),
+        );
+        doc.nodes.insert(3, deleted_node.to_owned());
+        doc.nodes.insert(
+            4,
+            Char::new(Position(vec![Id::new(1, 0), Id::new(7, 0)]), 0, 'h'),
+        );
+        doc.nodes
+            .insert(5, Char::new(Position(vec![Id::new(1, 1)]), 0, 'h'));
+        doc.nodes.insert(
+            6,
+            Char::new(Position(vec![Id::new(1, 1), Id::new(1, 1)]), 0, 'h'),
+        );
+
+        doc.delete_by_val(&deleted_node);
+
+        assert_eq!(doc.nodes.contains(&deleted_node), false);
+    }
+
+    #[test]
     fn test_delete_by_value() {
         let mut doc = Document::new(0);
 
@@ -390,11 +423,9 @@ mod tests {
 
         let space = doc.nodes.get(6).unwrap().to_owned();
 
-        dbg!(&space);
-
         doc.delete_by_val(&space);
 
-        assert_eq!(doc.content().unwrap(), "helloworld");
+        assert_eq!(doc.content(), "helloworld");
     }
 
     #[test]
@@ -413,7 +444,7 @@ mod tests {
         doc.insert_by_index('l', 0);
         doc.insert_by_index('d', 0);
 
-        assert_eq!(doc.content().unwrap(), "dlrow olleh");
+        assert_eq!(doc.content(), "dlrow olleh");
         assert_eq!(is_sorted(&doc), true);
     }
 
@@ -432,9 +463,15 @@ mod tests {
         doc.insert_by_index('r', 0);
         doc.insert_by_index('l', 0);
         doc.insert_by_index('d', 0);
-        doc.delete_by_index(5);
 
-        assert_eq!(doc.content().unwrap(), "dlrowolleh");
+        let content = doc.content();
+        let index_of_space = content
+            .find(' ')
+            .expect("Content should contain a space character");
+
+        doc.delete_by_index(index_of_space + 1);
+
+        assert_eq!(doc.content(), "dlrowolleh");
         assert_eq!(is_sorted(&doc), true);
     }
 }
