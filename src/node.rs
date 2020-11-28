@@ -55,7 +55,9 @@ impl Node {
     /// `nodes`: the set of nodes that changes will be progagated to
     pub fn new(host: String, port: u16, clients: Vec<Client>) -> Result<Self, io::Error> {
         let (sender, receiver) = channel::<Event>();
-        let document = Document::new();
+
+        // TODO: make a unique site_id
+        let document = Document::new(0);
 
         Ok(Self {
             host,
@@ -79,7 +81,7 @@ impl Node {
     pub async fn run(&'static mut self) -> Result<(), io::Error> {
         self.init_clients();
         self.recv();
-	
+
         loop {
             match self.event_handler.recv() {
                 Ok(Event::CharacterKeyPress { val, i }) => {
@@ -92,9 +94,12 @@ impl Node {
                         Self::propagate(&self.client_channels, &change);
                     }
                 }
-		// TODO: add binary search methods in document.rs so chars can be inserted/deleted.
-                Ok(Event::RemoteInsert { val }) => {}
-                Ok(Event::RemoteDelete { val }) => {}
+                Ok(Event::RemoteInsert { ref val }) => {
+                    self.document.insert_by_val(val);
+                }
+                Ok(Event::RemoteDelete { ref val }) => {
+                    self.document.delete_by_val(val);
+                }
                 Err(e) => println!("Received error: {:#?}", e),
             }
         }
@@ -167,8 +172,10 @@ mod tests {
     use super::Node;
 
     #[tokio::test]
-    async fn test_add_node() {
-        let node1 = Node::new(String::from("localhost"), 2001, Vec::new());
-        let node2 = Node::new(String::from("localhost"), 2002, Vec::new());
+    async fn test_add_node() -> Result<(), Box<dyn std::error::Error>> {
+        Node::new(String::from("localhost"), 2001, Vec::new())?;
+        Node::new(String::from("localhost"), 2002, Vec::new())?;
+
+        Ok(())
     }
 }

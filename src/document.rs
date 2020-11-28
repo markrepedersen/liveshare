@@ -112,11 +112,12 @@ impl Position {
     /// between (0.13591) : [1,1] ->  [3,1]  -> [5,3] -> [9,2] -> [1,1]
     pub fn create(site: u64, before: &[Id], after: &[Id]) -> Self {
         let (virtual_min, virtual_max) = (Id::new(PAGE_MIN, site), Id::new(PAGE_MAX, site));
-        let len = max(before.len(), after.len());
+        let max_len = max(before.len(), after.len());
         let mut new_pos = Vec::new();
         let mut is_same_site = true;
+        let mut did_change = false;
 
-        for i in 0..len {
+        for i in 0..max_len {
             let id1 = before.get(i).unwrap_or(&virtual_min);
             let id2 = after
                 .get(i)
@@ -125,13 +126,23 @@ impl Position {
             let diff = id2.digit - id1.digit;
 
             if diff > 1 {
-                let new_digit = Self::generate_random_digit(id1.digit, id2.digit);
+                // Both digits differ by more than 1, so generate a random digit between the two ID digits, exclusively.
+                let new_digit = Self::generate_random_digit(id1.digit + 1, id2.digit);
+                did_change = true;
                 new_pos.push(Id::new(new_digit, site));
                 break;
             } else {
+                // Both IDs differ by at most 1
                 new_pos.push(id1.to_owned());
                 is_same_site = id1.cmp(id2) == Ordering::Equal;
             }
+        }
+
+        if !did_change {
+            // In this case, the digits at each i-th ID differed by at most one and each position had the same length.
+            // If this case wasn't here, then each ID will simply be appended each at step, so you'll get the same position as the n-th position, which isn't good.
+            let new_digit = Self::generate_random_digit(virtual_min.digit + 1, virtual_max.digit);
+            new_pos.push(Id::new(new_digit, site));
         }
 
         Position(new_pos)
@@ -184,22 +195,21 @@ impl Char {
 
 #[derive(Debug)]
 pub struct Document {
-    pub nodes: Vec<Char>,
-    pub site: u64,
+    nodes: Vec<Char>,
+    site: u64,
 }
 
 impl Document {
-    pub fn new() -> Self {
+    pub fn new(site: u64) -> Self {
         Self {
             nodes: vec![
-                Char::new(Position(vec![Id::new(PAGE_MIN, 0)]), 0, NIL),
-                Char::new(Position(vec![Id::new(PAGE_MAX, 0)]), 0, NIL),
+                Char::new(Position(vec![Id::new(PAGE_MIN, site)]), 0, NIL),
+                Char::new(Position(vec![Id::new(PAGE_MAX, site)]), 0, NIL),
             ],
-            site: 0,
+            site,
         }
     }
 
-    /// On receiving an remote INSERT operation with position identifier p, a client performs the following:
     /// A client makes a local change at index i and the following steps are performed:
     /// - Finds the i-th and (i+1)th position identifier.
     /// - Inserts a new position identifier between them.
@@ -213,13 +223,36 @@ impl Document {
         self.nodes.get(n + 1)
     }
 
+    /// Inserts `val` by first searching for its correct position n and then inserting it between the n-th and (n+1)th node.
+    /// If `val` already exists inside `nodes`, then return `None`.
+    /// Otherwise, return the new inserted value.
+    pub fn insert_by_val(&mut self, val: &Char) -> Option<&Char> {
+        match self.nodes.binary_search(val) {
+            Ok(_) => None,
+            Err(i) => {
+                self.nodes.insert(i, val.to_owned());
+                self.nodes.get(i)
+            }
+        }
+    }
+
+    /// Deletes `val` by first searching for its correct position and then deleting it.
+    /// If `val` does not exist inside `nodes`, then return `None`.
+    /// Otherwise, return the deleted value.
+    pub fn delete_by_val(&mut self, val: &Char) -> Option<Char> {
+        self.nodes
+            .binary_search(val)
+            .ok()
+            .and_then(|i| Some(self.nodes.remove(i)))
+    }
+
     /// Receives a local request to delete an atom from the document.
     /// A client deletes a character at index i and the following steps are performed:
     /// - Find the (i+1)-th character in the document (i + 1 since we don't count the virtual nodes).
     /// - Record its position identifer and then deletes it from the document.
     /// - Sends a remote DELETE operation (with the newly generated position identfier) to all other clients.
     pub fn delete_by_index(&mut self, n: usize) -> Option<Char> {
-        let node = self.nodes.remove(n + 1);
+        let node = self.nodes.remove(n);
         Some(node)
     }
 
@@ -236,7 +269,10 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    use super::Char;
     use super::Document;
+    use super::Id;
+    use super::Position;
     use super::PAGE_MAX;
     use super::PAGE_MIN;
 
@@ -246,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_initial_insert() {
-        let mut doc = Document::new();
+        let mut doc = Document::new(0);
         doc.insert_by_index('a', 0);
         assert_eq!(doc.nodes.len(), 3);
 
@@ -257,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_consecutive_inserts() {
-        let mut doc = Document::new();
+        let mut doc = Document::new(0);
 
         doc.insert_by_index('h', 0);
         doc.insert_by_index('e', 1);
@@ -279,8 +315,91 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_by_value() {
+        let mut doc = Document::new(0);
+
+        doc.insert_by_index('h', 0);
+        doc.insert_by_index('e', 1);
+        doc.insert_by_index('l', 2);
+        doc.insert_by_index('l', 3);
+        doc.insert_by_index('o', 4);
+        doc.insert_by_index(' ', 5);
+        doc.insert_by_index('w', 6);
+        doc.insert_by_index('o', 7);
+        doc.insert_by_index('r', 8);
+        doc.insert_by_index('l', 9);
+        doc.insert_by_index('d', 10);
+
+        let space = doc.delete_by_index(6).unwrap().to_owned();
+
+        doc.insert_by_val(&space);
+
+        assert_eq!(doc.content().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_insert_by_index_complex() {
+        let mut doc = Document::new(0);
+        doc.nodes
+            .insert(1, Char::new(Position(vec![Id::new(1, 0)]), 0, 'h'));
+        doc.nodes.insert(
+            2,
+            Char::new(Position(vec![Id::new(1, 0), Id::new(4, 0)]), 0, 'h'),
+        );
+        doc.nodes.insert(
+            3,
+            Char::new(
+                Position(vec![Id::new(1, 0), Id::new(6, 0), Id::new(3, 1)]),
+                0,
+                'h',
+            ),
+        );
+        doc.nodes.insert(
+            4,
+            Char::new(Position(vec![Id::new(1, 0), Id::new(7, 0)]), 0, 'h'),
+        );
+        doc.nodes
+            .insert(5, Char::new(Position(vec![Id::new(1, 1)]), 0, 'h'));
+        doc.nodes.insert(
+            6,
+            Char::new(Position(vec![Id::new(1, 1), Id::new(1, 1)]), 0, 'h'),
+        );
+
+        doc.insert_by_index('a', 2);
+        doc.insert_by_index('b', 2);
+        doc.insert_by_index('c', 2);
+
+        assert_eq!(is_sorted(&doc), true);
+    }
+
+    #[test]
+    fn test_delete_by_value() {
+        let mut doc = Document::new(0);
+
+        doc.insert_by_index('h', 0);
+        doc.insert_by_index('e', 1);
+        doc.insert_by_index('l', 2);
+        doc.insert_by_index('l', 3);
+        doc.insert_by_index('o', 4);
+        doc.insert_by_index(' ', 5);
+        doc.insert_by_index('w', 6);
+        doc.insert_by_index('o', 7);
+        doc.insert_by_index('r', 8);
+        doc.insert_by_index('l', 9);
+        doc.insert_by_index('d', 10);
+
+        let space = doc.nodes.get(6).unwrap().to_owned();
+
+        dbg!(&space);
+
+        doc.delete_by_val(&space);
+
+        assert_eq!(doc.content().unwrap(), "helloworld");
+    }
+
+    #[test]
     fn test_interleaved_inserts() {
-        let mut doc = Document::new();
+        let mut doc = Document::new(0);
 
         doc.insert_by_index('h', 0);
         doc.insert_by_index('e', 0);
@@ -300,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_delete() {
-        let mut doc = Document::new();
+        let mut doc = Document::new(0);
 
         doc.insert_by_index('h', 0);
         doc.insert_by_index('e', 0);
