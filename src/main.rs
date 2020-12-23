@@ -10,12 +10,7 @@ use {config::Config, node::Node};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::parse()?;
-    // Trick to tell the compiler that it will live for entirety of program's life.
-    let node: &'static mut Node = Box::leak(Box::new(Node::new(
-        config.addr.host,
-        config.addr.port,
-        config.clients,
-    )?));
+    let mut node = Node::new(config.addr.host, config.addr.port, config.clients).await?;
 
     node.run().await?;
 

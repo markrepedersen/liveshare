@@ -210,17 +210,16 @@ impl Document {
         }
     }
 
-    /// A client makes a local change at index i and the following steps are performed:
-    /// - Finds the i-th and (i+1)th position identifier.
+    /// A client makes a local coordinate change and the following steps are performed:
+    /// - Finds the i-th and (i+1)-th position identifier.
     /// - Inserts a new position identifier between them.
-    /// - Sends a remote INSERTION operation (with the newly generated position identifier) to all other clients.
-    pub fn insert_by_index(&mut self, c: char, n: usize) -> Option<&Char> {
+    pub fn insert_by_index(&mut self, c: char, n: usize) -> Option<Char> {
         let prev = self.nodes.get(n)?;
         let next = self.nodes.get(n + 1)?;
         let node = Char::create(c, self.site, prev, next);
 
         self.nodes.insert(n + 1, node);
-        self.nodes.get(n + 1)
+        self.nodes.get(n + 1).map(|v| v.to_owned())
     }
 
     /// Inserts `val` by first searching for its correct position n and then inserting it between the n-th and (n+1)th node.
@@ -250,7 +249,6 @@ impl Document {
     /// A client deletes a character at index i and the following steps are performed:
     /// - Find the (i+1)-th character in the document (i + 1 since we don't count the virtual nodes).
     /// - Record its position identifer and then deletes it from the document.
-    /// - Sends a remote DELETE operation (with the newly generated position identfier) to all other clients.
     pub fn delete_by_index(&mut self, n: usize) -> Option<Char> {
         let node = self.nodes.remove(n);
         Some(node)
