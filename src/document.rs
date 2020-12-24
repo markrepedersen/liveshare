@@ -11,11 +11,11 @@ const PAGE_MAX: u64 = u64::MAX;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Id {
     digit: u64,
-    site: u64,
+    site: i64,
 }
 
 impl Id {
-    pub fn new(digit: u64, site_id: u64) -> Self {
+    pub fn new(digit: u64, site_id: i64) -> Self {
         Id {
             digit,
             site: site_id,
@@ -110,7 +110,7 @@ impl Position {
     ///   prev  (0.13590) : [1,1] -> *[3,1]* -> [5,3] -> [9,2]
     ///   next  (0.13800) : [1,1] -> *[3,3]* -> [8,1]
     /// between (0.13591) : [1,1] ->  [3,1]  -> [5,3] -> [9,2] -> [1,1]
-    pub fn create(site: u64, before: &[Id], after: &[Id]) -> Self {
+    pub fn create(site: i64, before: &[Id], after: &[Id]) -> Self {
         let (virtual_min, virtual_max) = (Id::new(PAGE_MIN, site), Id::new(PAGE_MAX, site));
         let max_len = max(before.len(), after.len());
         let mut new_pos = Vec::new();
@@ -184,7 +184,7 @@ impl Char {
         }
     }
 
-    pub fn create(c: char, site: u64, c1: &Char, c2: &Char) -> Self {
+    pub fn create(c: char, site: i64, c1: &Char, c2: &Char) -> Self {
         Self {
             position: Position::create(site, &c1.position.0, &c2.position.0),
             clock: 0,
@@ -196,11 +196,11 @@ impl Char {
 #[derive(Debug)]
 pub struct Document {
     nodes: Vec<Char>,
-    site: u64,
+    site: i64,
 }
 
 impl Document {
-    pub fn new(site: u64) -> Self {
+    pub fn new(site: i64) -> Self {
         Self {
             nodes: vec![
                 Char::new(Position(vec![Id::new(PAGE_MIN, site)]), 0, NIL),

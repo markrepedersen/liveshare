@@ -19,7 +19,7 @@ struct Opts {
     clients: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct Client {
     pub host: String,
     pub port: u16,
@@ -46,8 +46,6 @@ impl Client {
 /// - A list of any other clients that this client knows about
 #[derive(Deserialize)]
 pub struct Config {
-    /// A list of clients that this client is aware of.
-    pub clients: Vec<Client>,
     pub addr: Client,
 }
 
@@ -58,14 +56,8 @@ impl Config {
                 .addr
                 .expect("<addr> argument must be specified if no config file is given."),
         );
-        let clients: Vec<Client> = opts
-            .clients
-            .expect("<clients> argument must be specified if no config file is given.")
-            .iter()
-            .map(|v: &String| Client::new(v))
-            .collect();
 
-        Ok(Config { clients, addr })
+        Ok(Config { addr })
     }
 
     fn parse_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {

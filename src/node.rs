@@ -1,8 +1,7 @@
+use std::{collections::HashMap, net::SocketAddr};
+
 use {
-    crate::{
-        config::Client,
-        document::{Char, Document},
-    },
+    crate::document::{Char, Document},
     bincode::{deserialize, serialize},
     serde::{Deserialize, Serialize},
     std::io,
@@ -15,19 +14,14 @@ use {
 
 #[derive(Debug)]
 pub struct Peer {
-    host: String,
-    port: u16,
+    id: u64,
+    addr: SocketAddr,
     conn: TcpStream,
 }
 
 impl Peer {
-    /// Connect to the given peer and return its connection details.
-    pub async fn connect(host: &String, port: u16) -> io::Result<Self> {
-        Ok(Self {
-            host: host.clone(),
-            port,
-            conn: TcpStream::connect((host.clone(), port)).await?,
-        })
+    pub fn new(id: u64, addr: SocketAddr, conn: TcpStream) -> Self {
+        Self { id, addr, conn }
     }
 
     /// Send the event to the peer.
@@ -37,11 +31,6 @@ impl Peer {
     }
 }
 
-/// An event can come from one of two sources: The messaging service (editor frontend) or from connected peers (foreign replicated documents).
-/// *Messaging Service*
-/// Message from RabbitMQ -> Update local document state -> Propagate change(s) to connected peers
-/// *Peers*
-/// Message from peer -> Send character operation to messaging service -> Renders the new document state
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum Event {
@@ -59,8 +48,9 @@ pub enum Event {
 pub struct Node {
     host: String,
     port: u16,
+    id: i64,
     document: Document,
-    peers: Vec<Peer>,
+    peers: HashMap<i64, Peer>,
 }
 
 impl Node {
@@ -69,25 +59,23 @@ impl Node {
     /// `host`: the hostname of this node
     /// `port`: the port of this node
     /// `clients`: the set of nodes that changes will be progagated to
-    pub async fn new(host: String, port: u16, clients: Vec<Client>) -> io::Result<Self> {
-        let mut peers = Vec::new();
-
-        for client in &clients {
-            peers.push(Peer::connect(&client.host, client.port).await?);
-        }
-
-        let guid = Self::init_guid(&peers);
-        let document = Document::new(guid);
-
-        Ok(Self {
+    pub fn new(host: String, port: u16) -> Self {
+        Self {
             host,
             port,
-            document,
-            peers,
-        })
+            id: -1,
+            document: Document::new(-1),
+            peers: HashMap::new(),
+        }
     }
 
-    /// Runs the event loop
+    /// An event can come from one of two sources:
+    /// - The client (editor frontend); or
+    /// - connected peers (foreign replicated documents)
+    /// # Client
+    /// Message from client -> Update local document state -> Propagate change(s) to connected peers
+    /// # Peers
+    /// Message from peer -> Send character operation to messaging service -> Renders the new document state
     #[instrument(level = "info")]
     pub async fn run(&mut self) -> io::Result<()> {
         let host = &self.host;
@@ -97,15 +85,46 @@ impl Node {
         info!("Started TCP listener on {}:{}.", host.clone(), port);
 
         loop {
-            let (ref mut stream, _) = socket.accept().await?;
+            let (ref mut stream, ref addr) = socket.accept().await?;
             let mut buf = Vec::new();
 
             stream.read_to_end(&mut buf).await?;
 
             match deserialize::<Event>(&buf) {
-                Ok(event) => self.handle_event(event).await,
+                Ok(event) => match event {
+                    Event::Insert { c, line, column } => {
+                        if let Some(val) = self.document.insert_by_index(c, line) {
+                            self.propagate(Event::RemoteInsert { val }).await;
+                        }
+                    }
+                    Event::Delete { line, column } => {
+                        if let Some(val) = self.document.delete_by_index(line) {
+                            self.propagate(Event::RemoteDelete { val }).await;
+                        }
+                    }
+                    Event::RemoteInsert { ref val } => {
+                        // TODO: render remote change to gui
+                        self.add_peer(id, addr, conn);
+                        self.document.insert_by_val(val);
+                    }
+                    Event::RemoteDelete { ref val } => {
+                        // TODO: render remote change to gui
+                        self.add_peer(id, addr, conn);
+                        self.document.delete_by_val(val);
+                    }
+                },
                 Err(e) => error!("Error parsing message from peer: {}", e),
             };
+        }
+    }
+
+    /// Add a peer to the network.
+    /// Peers are identified by their GUID.
+    /// If a peer is unidentified (i.e. their GUID is either -1 (unitialized) or unknown), then it will be added to the network.
+    /// Otherwise, it is ignored.
+    fn add_peer(&mut self, id: i64, addr: SocketAddr, conn: TcpStream) {
+        if id == -1 || !self.peers.contains_key(&id) {
+            self.peers.insert(id, Peer::new(id, addr, conn));
         }
     }
 
@@ -117,37 +136,13 @@ impl Node {
         unimplemented!("Add GUID for each node");
     }
 
-    #[instrument(level = "info")]
-    async fn handle_event(&mut self, event: Event) {
-        match event {
-            Event::Insert { c, line, column } => {
-                if let Some(val) = self.document.insert_by_index(c, line) {
-                    self.propagate(Event::RemoteInsert { val }).await;
-                }
-            }
-            Event::Delete { line, column } => {
-                if let Some(val) = self.document.delete_by_index(line) {
-                    self.propagate(Event::RemoteDelete { val }).await;
-                }
-            }
-            Event::RemoteInsert { ref val } => {
-                // TODO: render remote change to gui
-                self.document.insert_by_val(val);
-            }
-            Event::RemoteDelete { ref val } => {
-                // TODO: render remote change to gui
-                self.document.delete_by_val(val);
-            }
-        }
-    }
-
     /// Send the change to each client's respective thread.
     #[instrument(level = "info")]
     async fn propagate(&mut self, event: Event) {
         let tasks: Vec<_> = self
             .peers
             .iter_mut()
-            .map(|peer| peer.send(&event))
+            .map(|(_, peer)| peer.send(&event))
             .collect();
 
         for task in tasks {
@@ -164,8 +159,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_node() -> Result<(), Box<dyn std::error::Error>> {
-        let mut n1 = Node::new(String::from("localhost"), 2001, Vec::new()).await?;
-        // let mut n2 = Node::new(String::from("localhost"), 2002, Vec::new()).await?;
+        let host = "localhost".to_string();
+        let mut n1 = Node::new(host, 2001);
+        // let mut n2 = Node::new(host, 2002);
 
         n1.run().await?;
 
