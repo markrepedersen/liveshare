@@ -19,14 +19,18 @@ struct Opts {
     clients: Option<Vec<String>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct Client {
     pub host: String,
     pub port: u16,
 }
 
 impl Client {
-    pub fn new(v: &String) -> Self {
+    pub fn new(host: String, port: u16) -> Self {
+        Self { host, port }
+    }
+
+    pub fn parse(v: &String) -> Self {
         let split: Vec<&str> = v.split(":").collect();
 
         if split.len() < 2 {
@@ -51,7 +55,7 @@ pub struct Config {
 
 impl Config {
     fn parse_args(opts: Opts) -> Result<Config, Box<dyn std::error::Error>> {
-        let addr = Client::new(
+        let addr = Client::parse(
             &opts
                 .addr
                 .expect("<addr> argument must be specified if no config file is given."),

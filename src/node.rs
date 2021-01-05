@@ -1,9 +1,10 @@
 use std::{collections::HashMap, net::SocketAddr};
 
 use {
-    crate::document::{Char, Document},
+    crate::{atom::Atom, config, document::Document, range::Range},
     bincode::{deserialize, serialize},
     serde::{Deserialize, Serialize},
+    serde_json::ser::to_vec,
     std::io,
     tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -12,32 +13,61 @@ use {
     tracing::{error, info, instrument},
 };
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type")]
+pub enum Event {
+    RemoteInsert { id: i64, lines: Vec<Atom> },
+    RemoteDelete { id: i64, lines: Vec<Atom> },
+    Insert { lines: Vec<char>, range: Range },
+    Delete { range: Range },
+}
+
 #[derive(Debug)]
 pub struct Peer {
-    id: u64,
+    id: i64,
     addr: SocketAddr,
     conn: TcpStream,
 }
 
 impl Peer {
-    pub fn new(id: u64, addr: SocketAddr, conn: TcpStream) -> Self {
+    #[instrument(level = "info")]
+    pub fn new(id: i64, addr: SocketAddr, conn: TcpStream) -> Self {
         Self { id, addr, conn }
     }
 
     /// Send the event to the peer.
+    #[instrument(level = "info")]
     pub async fn send(&mut self, event: &Event) -> io::Result<()> {
         let buf = serialize(event).unwrap();
         self.conn.write_all(&buf).await
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "type")]
-pub enum Event {
-    RemoteInsert { val: Char },
-    RemoteDelete { val: Char },
-    Insert { c: char, line: usize, column: usize },
-    Delete { line: usize, column: usize },
+#[derive(Debug)]
+pub struct Client {
+    addr: SocketAddr,
+    conn: TcpStream,
+}
+
+impl Client {
+    // Sends the event as a JSON payload to the frontend.
+    #[instrument(level = "info")]
+    pub fn send(&self, range: &Range, event: &Event) {
+        let buf = to_vec(event).expect("Unable to serialize event.");
+        self.conn.write_all(&buf);
+    }
+
+    #[instrument(level = "info")]
+    pub async fn connect(config: config::Client) -> Self {
+        if let Ok(conn) = TcpStream::connect((config.host, config.port)).await {
+            Self {
+                addr: conn.local_addr().unwrap(),
+                conn,
+            }
+        } else {
+            panic!("Unable to connect to client editor.");
+        }
+    }
 }
 
 /// A node will handle propagation of changes in its respective document.
@@ -49,23 +79,39 @@ pub struct Node {
     host: String,
     port: u16,
     id: i64,
-    document: Document,
+    socket: TcpListener,
+    client: Client,
     peers: HashMap<i64, Peer>,
+    document: Document,
 }
 
 impl Node {
-    /// Creates the node.
-    /// Note: no work is done until the `run` function is called.
-    /// `host`: the hostname of this node
-    /// `port`: the port of this node
-    /// `clients`: the set of nodes that changes will be progagated to
-    pub fn new(host: String, port: u16) -> Self {
-        Self {
-            host,
-            port,
-            id: -1,
-            document: Document::new(-1),
-            peers: HashMap::new(),
+    /// Creates the node, creating client connections as necessary.
+    /// Any errors connecting will immediately terminate the initalization process.
+    #[instrument(level = "info")]
+    pub async fn init(addr: config::Client, client_addr: config::Client) -> Self {
+        match TcpListener::bind((addr.host.clone(), addr.port)).await {
+            Ok(socket) => {
+                info!(
+                    "Started TCP listener on {}:{}.",
+                    addr.host.clone(),
+                    addr.port
+                );
+
+                Self {
+                    host: addr.host,
+                    port: addr.port,
+                    id: -1,
+                    socket,
+                    client: Client::connect(client_addr).await,
+                    peers: HashMap::new(),
+                    document: Document::new(-1),
+                }
+            }
+            Err(e) => panic!(format!(
+                "Error connecting to local address: {}:{}",
+                addr.host, addr.port
+            )),
         }
     }
 
@@ -78,39 +124,46 @@ impl Node {
     /// Message from peer -> Send character operation to messaging service -> Renders the new document state
     #[instrument(level = "info")]
     pub async fn run(&mut self) -> io::Result<()> {
-        let host = &self.host;
-        let port = self.port;
-        let socket = TcpListener::bind((host.clone(), port)).await?;
-
-        info!("Started TCP listener on {}:{}.", host.clone(), port);
+        info!("[{}:{}] Running node...", self.host, self.port);
 
         loop {
-            let (ref mut stream, ref addr) = socket.accept().await?;
+            let (mut conn, addr) = self.socket.accept().await?;
             let mut buf = Vec::new();
 
-            stream.read_to_end(&mut buf).await?;
+            conn.read_to_end(&mut buf).await?;
 
             match deserialize::<Event>(&buf) {
                 Ok(event) => match event {
-                    Event::Insert { c, line, column } => {
-                        if let Some(val) = self.document.insert_by_index(c, line) {
-                            self.propagate(Event::RemoteInsert { val }).await;
+                    Event::Insert {
+                        ref lines,
+                        ref range,
+                    } => {
+                        if let Some(lines) = self.document.local_insert(range, lines) {
+                            let event = Event::RemoteInsert { id: self.id, lines };
+                            self.propagate(event).await;
                         }
                     }
-                    Event::Delete { line, column } => {
-                        if let Some(val) = self.document.delete_by_index(line) {
-                            self.propagate(Event::RemoteDelete { val }).await;
+
+                    Event::Delete { ref range } => {
+                        if let Some(lines) = self.document.local_delete(range) {
+                            let event = Event::RemoteDelete { id: self.id, lines };
+                            self.propagate(event).await;
                         }
                     }
-                    Event::RemoteInsert { ref val } => {
-                        // TODO: render remote change to gui
+
+                    Event::RemoteInsert { id, ref lines } => {
                         self.add_peer(id, addr, conn);
-                        self.document.insert_by_val(val);
+                        if let Some(ref range) = self.document.remote_insert(lines) {
+                            // send range and line contents
+                            self.client.send(range, lines);
+                        }
                     }
-                    Event::RemoteDelete { ref val } => {
-                        // TODO: render remote change to gui
+
+                    Event::RemoteDelete { id, ref lines } => {
                         self.add_peer(id, addr, conn);
-                        self.document.delete_by_val(val);
+                        if let Some(range) = self.document.remote_delete(lines) {
+                            self.client.send(range, lines);
+                        }
                     }
                 },
                 Err(e) => error!("Error parsing message from peer: {}", e),
@@ -122,18 +175,11 @@ impl Node {
     /// Peers are identified by their GUID.
     /// If a peer is unidentified (i.e. their GUID is either -1 (unitialized) or unknown), then it will be added to the network.
     /// Otherwise, it is ignored.
+    #[instrument(level = "info")]
     fn add_peer(&mut self, id: i64, addr: SocketAddr, conn: TcpStream) {
-        if id == -1 || !self.peers.contains_key(&id) {
+        if !self.peers.contains_key(&id) {
             self.peers.insert(id, Peer::new(id, addr, conn));
         }
-    }
-
-    /// Configures this node's `unique` site ID.
-    /// Each node must have a globally unique site ID, so when a new node is introduced to the network, it will
-    /// ping each other node to determine the highest ID so far. The new node's ID will be that ID incremented by one.
-    #[instrument(level = "info")]
-    fn init_guid(peers: &Vec<Peer>) -> u64 {
-        unimplemented!("Add GUID for each node");
     }
 
     /// Send the change to each client's respective thread.
@@ -155,13 +201,14 @@ impl Node {
 
 #[cfg(test)]
 mod tests {
+    use super::config::Client;
     use super::Node;
 
     #[tokio::test]
     async fn test_add_node() -> Result<(), Box<dyn std::error::Error>> {
-        let host = "localhost".to_string();
-        let mut n1 = Node::new(host, 2001);
-        // let mut n2 = Node::new(host, 2002);
+        let addr = Client::new("localhost".to_string(), 2000);
+        let client = Client::new("localhost".to_string(), 2001);
+        let mut n1 = Node::init(addr, client).await;
 
         n1.run().await?;
 
